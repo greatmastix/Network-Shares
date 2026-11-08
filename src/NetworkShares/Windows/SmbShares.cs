@@ -14,32 +14,44 @@ static class SmbShares
     // Share permissions as Windows' own sharing dialog writes them: Read, and Change (read, write, delete).
     const int ReadMask = 0x1200A9, ChangeMask = 0x1301BF;
 
-    public static void Add(string name, string path, IEnumerable<SecurityIdentifier> sids, Access access)
+    /// <summary>Calls <paramref name="use"/> with a native security descriptor that allows each grant its access.</summary>
+    static void WithDescriptor(IEnumerable<Grant> grants, Action<nint> use)
     {
-        var list = sids.ToList();
-        var dacl = new RawAcl(GenericAcl.AclRevision, list.Count);
-        foreach (var sid in list)
+        var aces = grants.SelectMany(g => g.Sids.Select(sid => (Sid: new SecurityIdentifier(sid), g.Access))).ToList();
+        var dacl = new RawAcl(GenericAcl.AclRevision, aces.Count);
+        foreach (var (sid, access) in aces)
             dacl.InsertAce(dacl.Count, new CommonAce(AceFlags.None, AceQualifier.AccessAllowed,
                 access == Access.Read ? ReadMask : ChangeMask, sid, false, null));
         var sd = new RawSecurityDescriptor(ControlFlags.DiscretionaryAclPresent | ControlFlags.SelfRelative, null, null, null, dacl);
         var bytes = new byte[sd.BinaryLength];
         sd.GetBinaryForm(bytes, 0);
-
         var mem = Marshal.AllocHGlobal(bytes.Length);
         try
         {
             Marshal.Copy(bytes, 0, mem, bytes.Length);
-            var info = new SHARE_INFO_502
-            {
-                netname = name, type = 0 /* STYPE_DISKTREE */, remark = Remark, max_uses = -1, path = path, security_descriptor = mem,
-            };
-            Check(NetShareAdd(null, 502, ref info, out _), $"Couldn't create the share \"{name}\"");
+            use(mem);
         }
         finally
         {
             Marshal.FreeHGlobal(mem);
         }
     }
+
+    public static void Add(string name, string path, IEnumerable<Grant> grants) => WithDescriptor(grants, sd =>
+    {
+        var info = new SHARE_INFO_502
+        {
+            netname = name, type = 0 /* STYPE_DISKTREE */, remark = Remark, max_uses = -1, path = path, security_descriptor = sd,
+        };
+        Check(NetShareAdd(null, 502, ref info, out _), $"Couldn't create the share \"{name}\"");
+    });
+
+    /// <summary>Replaces who may use the share, without interrupting anyone connected.</summary>
+    public static void SetPermissions(string name, IEnumerable<Grant> grants) => WithDescriptor(grants, sd =>
+    {
+        var info = new SHARE_INFO_1501 { security_descriptor = sd };
+        Check(NetShareSetInfo(null, name, 1501, ref info, out _), $"Couldn't change the share \"{name}\"");
+    });
 
     public static void Remove(string name)
     {
@@ -71,6 +83,9 @@ static class FolderAcl
         ? FileSystemRights.ReadAndExecute | FileSystemRights.Synchronize
         : FileSystemRights.Modify | FileSystemRights.Synchronize;
 
+    static FileSystemAccessRule Rule(SecurityIdentifier sid, FileSystemRights rights) =>
+        new(sid, rights, Inherit, PropagationFlags.None, AccessControlType.Allow);
+
     static FileSystemAccessRule? Explicit(DirectorySecurity sec, SecurityIdentifier sid) =>
         sec.GetAccessRules(true, false, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>().FirstOrDefault(r =>
             r.AccessControlType == AccessControlType.Allow && r.IdentityReference.Equals(sid)
@@ -85,9 +100,23 @@ static class FolderAcl
         var want = Rights(access);
         var have = Explicit(sec, sid)?.FileSystemRights ?? 0;
         if ((have & want) == want) return null;
-        sec.AddAccessRule(new FileSystemAccessRule(sid, want, Inherit, PropagationFlags.None, AccessControlType.Allow));
+        sec.AddAccessRule(Rule(sid, want));
         dir.SetAccessControl(sec);
         return new AclChange(sid.Value, (int)have);
+    }
+
+    /// <summary>For an entry the app manages: sets it to what the account had before plus <paramref name="access"/>.</summary>
+    public static void Set(string path, AclChange change, Access access)
+    {
+        var dir = new DirectoryInfo(path);
+        var sec = dir.GetAccessControl();
+        var sid = new SecurityIdentifier(change.Sid);
+        var target = (FileSystemRights)change.Prev | Rights(access);
+        var current = Explicit(sec, sid);
+        if (current?.FileSystemRights == target) return;
+        if (current != null) sec.RemoveAccessRuleSpecific(current);
+        sec.AddAccessRule(Rule(sid, target));
+        dir.SetAccessControl(sec);
     }
 
     /// <summary>Puts the account's entry back to what it was before <see cref="Grant"/>.</summary>
@@ -98,8 +127,18 @@ static class FolderAcl
         var sec = dir.GetAccessControl();
         var sid = new SecurityIdentifier(change.Sid);
         if (Explicit(sec, sid) is { } current) sec.RemoveAccessRuleSpecific(current);
-        if (change.Prev != 0)
-            sec.AddAccessRule(new FileSystemAccessRule(sid, (FileSystemRights)change.Prev, Inherit, PropagationFlags.None, AccessControlType.Allow));
+        if (change.Prev != 0) sec.AddAccessRule(Rule(sid, (FileSystemRights)change.Prev));
         dir.SetAccessControl(sec);
+    }
+
+    /// <summary>The folder's permission list as it is now, to put back if a multi-step change fails half-way.</summary>
+    public static byte[] Snapshot(string path) =>
+        new DirectoryInfo(path).GetAccessControl(AccessControlSections.Access).GetSecurityDescriptorBinaryForm();
+
+    public static void Restore(string path, byte[] snapshot)
+    {
+        var sec = new DirectorySecurity();
+        sec.SetSecurityDescriptorBinaryForm(snapshot, AccessControlSections.Access);
+        new DirectoryInfo(path).SetAccessControl(sec);
     }
 }

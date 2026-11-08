@@ -11,12 +11,13 @@
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <!-- Lets the project build (not run) on Linux/macOS, e.g. in CI. -->
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
-    <!-- Creating shares and users needs administrator rights: Windows asks once (UAC) when the app starts. -->
+    <!-- The window runs as a normal app (so drag and drop from Explorer works); the work that needs administrator
+         rights runs in an elevated helper, the same exe, started with one UAC prompt (see Windows/Backend.cs). -->
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>NetworkShares</AssemblyName>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <Product>Network Shares</Product>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
   </PropertyGroup>
 
 </Project>

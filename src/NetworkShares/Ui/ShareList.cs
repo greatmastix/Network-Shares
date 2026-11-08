@@ -13,7 +13,9 @@ sealed class ShareList : Panel
         TextAlign = ContentAlignment.MiddleCenter, ForeColor = Theme.MutedForeground,
     };
 
-    public event Action<ShareRecord>? CopyClicked, RemoveClicked;
+    public event Action<ShareRecord>? CopyClicked, EditClicked, RemoveClicked;
+
+    public void SetEmptyText(string text) => empty.Text = text;
 
     public ShareList()
     {
@@ -36,6 +38,7 @@ sealed class ShareList : Panel
         {
             var row = new Row(items[i]) { Dock = DockStyle.Top };
             row.CopyClicked += r => CopyClicked?.Invoke(r);
+            row.EditClicked += r => EditClicked?.Invoke(r);
             row.RemoveClicked += r => RemoveClicked?.Invoke(r);
             Controls.Add(row);
         }
@@ -45,10 +48,10 @@ sealed class ShareList : Panel
     sealed class Row : Control
     {
         readonly Item item;
-        Rectangle copyRect, removeRect;
-        int hover = -1;   // -1 none, 0 row, 1 copy, 2 remove
+        Rectangle copyRect, editRect, removeRect;
+        int hover = -1;   // -1 none, 0 row, 1 copy, 2 remove, 3 edit
 
-        public event Action<ShareRecord>? CopyClicked, RemoveClicked;
+        public event Action<ShareRecord>? CopyClicked, EditClicked, RemoveClicked;
 
         public Row(Item item)
         {
@@ -67,7 +70,7 @@ sealed class ShareList : Panel
 
         protected override void OnMouseMove(MouseEventArgs e)
         {
-            int h = copyRect.Contains(e.Location) ? 1 : removeRect.Contains(e.Location) ? 2 : 0;
+            int h = copyRect.Contains(e.Location) ? 1 : removeRect.Contains(e.Location) ? 2 : editRect.Contains(e.Location) ? 3 : 0;
             Cursor = h > 0 ? Cursors.Hand : Cursors.Default;
             if (h != hover) { hover = h; Invalidate(); }
             base.OnMouseMove(e);
@@ -85,6 +88,7 @@ sealed class ShareList : Panel
             if (e.Button == MouseButtons.Left)
             {
                 if (copyRect.Contains(e.Location)) CopyClicked?.Invoke(item.Record);
+                else if (editRect.Contains(e.Location)) EditClicked?.Invoke(item.Record);
                 else if (removeRect.Contains(e.Location)) RemoveClicked?.Invoke(item.Record);
             }
             base.OnMouseClick(e);
@@ -110,20 +114,20 @@ sealed class ShareList : Panel
             using (var dot = new SolidBrush(item.Missing ? Theme.Warning : Theme.Good)) g.FillEllipse(dot, 14 * s, cy - 4 * s, 8 * s, 8 * s);
 
             // Buttons, right to left.
-            var (copyText, removeText) = ("Copy path", "Remove");
-            int bh = (int)(28 * s), by = (int)(cy - bh / 2f);
-            int rw = TextRenderer.MeasureText(removeText, Theme.Body).Width + (int)(22 * s);
-            int cw = TextRenderer.MeasureText(copyText, Theme.Body).Width + (int)(22 * s);
-            removeRect = new Rectangle(Width - (int)(12 * s) - rw, by, rw, bh);
-            copyRect = new Rectangle(removeRect.Left - (int)(8 * s) - cw, by, cw, bh);
-            if (item.Missing) copyRect = Rectangle.Empty;
-            else Pill(g, copyRect, copyText, hover == 1 ? Theme.Border : Theme.Background, Theme.Foreground, s);
+            var (copyText, editText, removeText) = ("Copy path", "Edit", "Remove");
+            int bh = (int)(28 * s), by = (int)(cy - bh / 2f), gap = (int)(8 * s);
+            int W(string t) => TextRenderer.MeasureText(t, Theme.Body).Width + (int)(22 * s);
+            removeRect = new Rectangle(Width - (int)(12 * s) - W(removeText), by, W(removeText), bh);
+            editRect = new Rectangle(removeRect.Left - gap - W(editText), by, W(editText), bh);
+            copyRect = item.Missing ? Rectangle.Empty : new Rectangle(editRect.Left - gap - W(copyText), by, W(copyText), bh);
+            if (!item.Missing) Pill(g, copyRect, copyText, hover == 1 ? Theme.Border : Theme.Background, Theme.Foreground, s);
+            Pill(g, editRect, editText, hover == 3 ? Theme.Border : Theme.Background, Theme.Foreground, s);
             Pill(g, removeRect, removeText, hover == 2 ? Theme.Primary : Theme.Background, hover == 2 ? Color.White : Theme.Destructive, s);
 
-            // Who and access, then name and path.
-            int left = (int)(34 * s), right = (item.Missing ? removeRect.Left : copyRect.Left) - (int)(16 * s);
+            // Who, then name and path.
+            int left = (int)(34 * s), right = (item.Missing ? editRect.Left : copyRect.Left) - (int)(16 * s);
             var r = item.Record;
-            string meta = $"{r.Who}  ·  {r.AccessText}";
+            string meta = r.Who;
             int metaW = Math.Min(TextRenderer.MeasureText(meta, Theme.Body).Width, Math.Max(0, (right - left) / 2));
             TextRenderer.DrawText(g, meta, Theme.Body, new Rectangle(right - metaW, 0, metaW, (int)box.Height), Theme.MutedForeground,
                 TextFormatFlags.VerticalCenter | TextFormatFlags.Right | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);

@@ -8,7 +8,7 @@ namespace NetworkShares;
 /// Everything the app has changed, in one registry key: HKLM\SOFTWARE\NetworkShares. Only administrators and SYSTEM can
 /// read it. The key exists only while something is recorded, and is deleted when the last share, user and fix is gone.
 /// <code>
-///   Shares\&lt;name&gt;     Path, Mode, Access, Account, Sids, Acl, NullSession
+///   Shares\&lt;name&gt;     Path, Grants, Acl, NullSession
 ///   Users\&lt;name&gt;      Sid, Guest, Secret (guest login only: its password, encrypted with DPAPI)
 ///   Fixes\Server     StartType, WasRunning       (how the Server service was before the fix)
 ///   Fixes\Firewall   Rules                       (the rules the fix turned on)
@@ -81,10 +81,7 @@ static class Store
             list.Add(new ShareRecord(
                 name,
                 s.GetValue("Path") as string ?? "",
-                (ShareMode)(s.GetValue("Mode") as int? ?? 0),
-                (Access)(s.GetValue("Access") as int? ?? 0),
-                s.GetValue("Account") as string ?? "",
-                s.GetValue("Sids") as string[] ?? [],
+                ReadGrants(s),
                 (s.GetValue("Acl") as string[] ?? []).Select(AclChange.Parse).OfType<AclChange>().ToList(),
                 s.GetValue("NullSession") as int? == 1));
         }
@@ -95,12 +92,19 @@ static class Store
     {
         using var k = Section($@"Shares\{r.Name}");
         k.SetValue("Path", r.Path);
-        k.SetValue("Mode", (int)r.Mode, RegistryValueKind.DWord);
-        k.SetValue("Access", (int)r.Access, RegistryValueKind.DWord);
-        k.SetValue("Account", r.Account);
-        k.SetValue("Sids", r.Sids.ToArray(), RegistryValueKind.MultiString);
+        k.SetValue("Grants", r.Grants.Select(g => g.ToString()).ToArray(), RegistryValueKind.MultiString);
+        foreach (var legacy in new[] { "Mode", "Access", "Account", "Sids" }) k.DeleteValue(legacy, false);
         k.SetValue("Acl", r.Acl.Select(a => a.ToString()).ToArray(), RegistryValueKind.MultiString);
         k.SetValue("NullSession", r.NullSession ? 1 : 0, RegistryValueKind.DWord);
+    }
+
+    /// <summary>The share's people. Version 0.1 stored one per share (Mode, Access, Account, Sids): read as one grant.</summary>
+    static List<Grant> ReadGrants(RegistryKey s)
+    {
+        if (s.GetValue("Grants") is string[] lines) return lines.Select(Grant.Parse).OfType<Grant>().ToList();
+        var sids = s.GetValue("Sids") as string[] ?? [];
+        if (sids.Length == 0) return [];
+        return [new Grant((ShareMode)(s.GetValue("Mode") as int? ?? 0), s.GetValue("Account") as string ?? "", sids, (Access)(s.GetValue("Access") as int? ?? 0))];
     }
 
     public static void Delete(ShareRecord r) => DeleteSection($@"Shares\{r.Name}");

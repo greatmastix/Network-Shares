@@ -5,18 +5,6 @@ using static NetworkShares.Native;
 
 namespace NetworkShares;
 
-/// <summary>What stands between a share and the network, checked without changing anything.</summary>
-public sealed record Health(bool ServerOk, bool FirewallOk, bool HasFixes)
-{
-    public bool Ok => ServerOk && FirewallOk;
-
-    public IEnumerable<string> Problems()
-    {
-        if (!ServerOk) yield return "The Server service (file sharing) isn't running.";
-        if (!FirewallOk) yield return "Windows Firewall blocks file sharing on the current network.";
-    }
-}
-
 /// <summary>The one-click fixes, each undoable: the earliest "before" state is recorded in <see cref="Store"/>.</summary>
 static class Fixes
 {

@@ -10,29 +10,19 @@ sealed class MainForm : Form
 
     // Header
     readonly Pill pill = new();
-    readonly Button fix = Kit.Button("Fix…", Theme.Primary);
+    readonly Button action = Kit.Button("Fix…", Theme.Primary);   // Fix…, or Allow… while there are no admin rights
     readonly LinkLabel undoLink, cleanLink, aboutLink;
 
-    // New share
     readonly Card newCard = new("New share") { Dock = DockStyle.Top };
-    readonly TableLayoutPanel grid = Grid();
-    readonly TextBox folder = Kit.Box(), shareName = Kit.Box(), newUser = Kit.Box(), newPassword = Kit.Box(mono: true);
-    readonly ComboBox existingUser = Kit.Combo(editable: true);
-    readonly Segmented mode = new("Existing user", "New user", "Everyone"), access = new("Read only", "Read & write");
-    readonly Label guestInfo = Kit.Muted(), anonWarning = Kit.Muted(), hint = Kit.Muted();
-    readonly Button guestCopy = Kit.Small("Copy"), guestReset = Kit.Small("New password");
-    readonly CheckBox anonymous = Kit.Check("Anonymous: no password at all (advanced)");
-    readonly Button share = Kit.Button("Share folder", Theme.Primary, 150);
-    readonly Panel actions = new() { Dock = DockStyle.Top, Height = 54 };
-    readonly List<(Func<bool> When, Control[] Controls)> rules = [];
-
-    // Shares
+    readonly ShareEditor editor = new(editing: false) { Dock = DockStyle.Top };
     readonly Card sharesCard = new("Shares made with this app") { Dock = DockStyle.Fill, Margin = Padding.Empty };
     readonly ShareList list = new() { Dock = DockStyle.Fill };
     readonly Label footer = new() { AutoSize = true, ForeColor = Theme.MutedForeground, Location = new Point(0, 10) };
 
+    IBackend? backend;
+    Snapshot? data;
     Health? health;
-    bool busy, nameEdited, userEdited, programmatic;
+    bool busy, starting;
 
     public MainForm()
     {
@@ -40,8 +30,8 @@ sealed class MainForm : Form
         Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath!);
         AutoScaleDimensions = new SizeF(96, 96);
         AutoScaleMode = AutoScaleMode.Dpi;
-        ClientSize = new Size(840, 780);
-        MinimumSize = new Size(720, 700);
+        ClientSize = new Size(860, 860);
+        MinimumSize = new Size(740, 720);
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Theme.Background;
         ForeColor = Theme.Foreground;
@@ -54,17 +44,16 @@ sealed class MainForm : Form
         undoLink = Kit.Link("Undo fixes", UndoFixes);
         cleanLink = Kit.Link("Clean up", CleanUp);
         aboutLink = Kit.Link("About", () => { using var f = new AboutForm(); f.ShowDialog(this); });
-        fix.MinimumSize = new Size(0, 28);
-        fix.Font = Theme.Body;
-        fix.Visible = false;
-        undoLink.Visible = false;
-        fix.Click += (_, _) => Fix();
-        header.Controls.AddRange([pill, aboutLink, cleanLink, undoLink, fix]);
+        action.MinimumSize = new Size(0, 28);
+        action.Font = Theme.Body;
+        action.Visible = undoLink.Visible = cleanLink.Visible = false;
+        action.Click += (_, _) => { if (backend == null) Connect(); else Fix(); };
+        header.Controls.AddRange([pill, aboutLink, cleanLink, undoLink, action]);
         void Place()
         {
             pill.Location = new Point(header.Width - pill.Width, 14);
             int x = pill.Left - 16;
-            foreach (Control c in new Control[] { aboutLink, cleanLink, undoLink, fix })
+            foreach (Control c in new Control[] { aboutLink, cleanLink, undoLink, action })
             {
                 if (!c.Visible) continue;
                 c.Location = new Point(x - c.Width, 14 + (pill.Height - c.Height) / 2);
@@ -73,51 +62,14 @@ sealed class MainForm : Form
         }
         header.Resize += (_, _) => Place();
         pill.Resize += (_, _) => Place();
-        fix.VisibleChanged += (_, _) => Place();
-        undoLink.VisibleChanged += (_, _) => Place();
-        pill.Set("Checking…", Tone.Neutral);
+        foreach (var c in new Control[] { action, undoLink, cleanLink }) c.VisibleChanged += (_, _) => Place();
+        action.SizeChanged += (_, _) => Place();
 
         // ── New share ───────────────────────────────────────────────────────────────────────────
-        var browse = Kit.Small("Browse…");
-        browse.Click += (_, _) => Browse();
-        var generate = Kit.Small("Generate");
-        generate.Click += (_, _) => newPassword.Text = Passwords.Generate();
-        var copyPassword = Kit.Small("Copy");
-        copyPassword.Click += (_, _) => Kit.Copy(newPassword.Text);
-        guestCopy.Click += (_, _) => { if (Sharing.Guest() is { } g) Kit.Copy($"{Machine}\\{g.Name}\r\n{Sharing.GuestPassword()}"); };
-        guestReset.Click += (_, _) => ResetGuest();
-
-        folder.PlaceholderText = @"e.g. D:\Projects  (or drop a folder onto the window)";
-        bool Existing() => mode.SelectedIndex == 0;
-        bool New() => mode.SelectedIndex == 1;
-        bool Everyone() => mode.SelectedIndex == 2;
-        Row("Folder", Kit.Inline(folder, browse));
-        Row("Share name", shareName);
-        Row("Share with", mode);
-        Row("User", existingUser, Existing);
-        Row("User name", newUser, New);
-        Row("Password", Kit.Inline(newPassword, generate, copyPassword), New);
-        Row("Sign in as", Kit.Inline(guestInfo, guestCopy, guestReset), () => Everyone() && !anonymous.Checked);
-        Row("", anonymous, Everyone);
-        Row("", anonWarning, () => Everyone() && anonymous.Checked);
-        Row("Access", access);
-        guestInfo.AutoSize = true;
-        anonWarning.ForeColor = Theme.Warning;
-        anonWarning.MaximumSize = new Size(560, 0);
-        anonWarning.Text = "Turns on Windows' built-in Guest account and lets it connect over the network; both are switched "
-                           + "back off when the last anonymous share is removed. Other PCs may still refuse: Windows 10 and 11 "
-                           + "block guest access by default, and Windows 11 24H2 also requires SMB signing.";
-
-        share.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        share.Click += (_, _) => Share();
-        hint.Location = new Point(0, 18);
-        hint.ForeColor = Theme.Destructive;
-        actions.Controls.Add(share);
-        actions.Controls.Add(hint);
-        actions.Resize += (_, _) => share.Location = new Point(actions.Width - share.Width, 12);
-        newCard.Controls.Add(actions);
-        newCard.Controls.Add(grid);
-        grid.SizeChanged += (_, _) => FitCard();
+        editor.Submitted += Share;
+        editor.GuestResetRequested += ResetGuest;
+        newCard.Controls.Add(editor);
+        editor.SizeChanged += (_, _) => newCard.Height = newCard.Padding.Vertical + editor.Height;
 
         // ── Shares ──────────────────────────────────────────────────────────────────────────────
         list.CopyClicked += r =>
@@ -125,6 +77,7 @@ sealed class MainForm : Form
             Kit.Copy($@"\\{Machine}\{r.Name}");
             Flash($@"Copied \\{Machine}\{r.Name}");
         };
+        list.EditClicked += Edit;
         list.RemoveClicked += Remove;
         sharesCard.Controls.Add(list);
 
@@ -134,288 +87,154 @@ sealed class MainForm : Form
         foot.Controls.Add(copyAddress);
         footer.SizeChanged += (_, _) => copyAddress.Location = new Point(footer.Right + 10, footer.Top);
         footer.Text = FooterText();
-        NetworkChange.NetworkAddressChanged += (_, _) => BeginInvoke(() => footer.Text = FooterText());
+        NetworkChange.NetworkAddressChanged += (_, _) => { if (IsHandleCreated) BeginInvoke(() => footer.Text = FooterText()); };
 
         Controls.Add(sharesCard);
         Controls.Add(foot);
         Controls.Add(newCard);
         Controls.Add(header);
 
-        // ── Behaviour ───────────────────────────────────────────────────────────────────────────
-        folder.TextChanged += (_, _) => Suggest();
-        shareName.TextChanged += (_, _) =>
-        {
-            if (!programmatic) nameEdited = shareName.Text.Length > 0;
-            Suggest();
-        };
-        newUser.TextChanged += (_, _) => { if (!programmatic) userEdited = newUser.Text.Length > 0; };
-        mode.SelectedIndexChanged += (_, _) => UpdateRows();
-        anonymous.CheckedChanged += (_, _) => UpdateRows();
-        foreach (var c in new Control[] { folder, shareName, newUser, newPassword, existingUser }) c.TextChanged += (_, _) => hint.Text = "";
-
-        existingUser.Items.AddRange([.. Accounts.Selectable()]);
-        existingUser.Text = existingUser.Items.Cast<string>().FirstOrDefault(n => n.Equals(Environment.UserName, StringComparison.OrdinalIgnoreCase))
-                            ?? Environment.UserName;
-        newPassword.Text = Passwords.Generate();
-        access.SelectedIndex = 0;
-        UpdateRows();
-        RefreshList();
+        EnableDrop(this);
+        newCard.Enabled = false;
+        pill.Set("Starting…", Tone.Neutral);
+        list.SetEmptyText("Waiting for administrator rights…");
+        list.SetItems([]);
     }
 
-    // ── Layout helpers ──────────────────────────────────────────────────────────────────────────
+    // ── Admin helper ────────────────────────────────────────────────────────────────────────────
 
-    static TableLayoutPanel Grid()
+    /// <summary>Gets administrator rights: in this process if it already has them, otherwise from the helper (one UAC prompt).</summary>
+    async void Connect()
     {
-        var t = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, BackColor = Theme.Card };
-        t.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
-        t.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        return t;
-    }
-
-    void Row(string label, Control c, Func<bool>? when = null)
-    {
-        var l = new Label { Text = label, AutoSize = true, ForeColor = Theme.MutedForeground, Anchor = AnchorStyles.Left, Margin = new Padding(0, 8, 16, 8) };
-        if (c is TableLayoutPanel) c.Dock = DockStyle.Fill;   // a text box with buttons: take the whole cell
-        else c.Anchor = c is Label or CheckBox ? AnchorStyles.Left : AnchorStyles.Left | AnchorStyles.Right;
-        c.Margin = c.Margin with { Top = 5, Bottom = 5 };
-        grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        grid.Controls.Add(l, 0, grid.RowCount);
-        grid.Controls.Add(c, 1, grid.RowCount++);
-        if (when != null) rules.Add((when, [l, c]));
-    }
-
-    void UpdateRows()
-    {
-        grid.SuspendLayout();
-        foreach (var (when, controls) in rules)
-        {
-            bool show = when();
-            foreach (var c in controls) c.Visible = show;
-        }
-        grid.ResumeLayout();
-        if (mode.SelectedIndex == 2) RefreshGuest();
-        FitCard();
-    }
-
-    void FitCard() => newCard.Height = newCard.Padding.Vertical + grid.Height + actions.Height;
-
-    string FooterText()
-    {
-        var ips = Addresses();
-        return $@"Other PCs connect to   \\{Machine}" + (ips.Count > 0 ? "   ·   " + string.Join("   ·   ", ips.Select(ip => @"\\" + ip)) : "");
-    }
-
-    static List<string> Addresses()
-    {
+        if (starting || backend != null) return;
+        starting = true;
+        SetConnected(false, "Waiting for administrator rights…");
         try
         {
-            return NetworkInterface.GetAllNetworkInterfaces()
-                .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType is not (NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel))
-                .OrderByDescending(n => n.GetIPProperties().GatewayAddresses.Count > 0)
-                .SelectMany(n => n.GetIPProperties().UnicastAddresses)
-                .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork && !a.Address.ToString().StartsWith("169.254."))
-                .Select(a => a.Address.ToString()).Distinct().Take(2).ToList();
+            backend = LocalBackend.Elevated() ? new LocalBackend() : await RemoteBackend.StartAsync();
+            SetConnected(true, "");
+            await Reload();
         }
-        catch
+        catch (OperationCanceledException)
         {
-            return [];
+            SetConnected(false, "This app needs administrator rights to create shares and users. Press Allow… to ask again.");
         }
-    }
-
-    // ── New share ───────────────────────────────────────────────────────────────────────────────
-
-    void Suggest()
-    {
-        programmatic = true;
-        if (!nameEdited && folder.Text.Trim().Length > 0) shareName.Text = Naming.SuggestShareName(folder.Text);
-        if (!userEdited && shareName.Text.Length > 0) newUser.Text = Naming.SuggestUserName(shareName.Text);
-        programmatic = false;
-    }
-
-    void SetFolder(string path)
-    {
-        nameEdited = false;
-        folder.Text = path;
-    }
-
-    void Browse()
-    {
-        using var d = new FolderBrowserDialog { Description = "Choose the folder to share", UseDescriptionForTitle = true, ShowNewFolderButton = true };
-        if (Directory.Exists(folder.Text)) d.InitialDirectory = folder.Text;
-        if (d.ShowDialog(this) == DialogResult.OK) SetFolder(d.SelectedPath);
-    }
-
-    void RefreshGuest()
-    {
-        var g = Sharing.Guest();
-        var pw = g != null ? Sharing.GuestPassword() : null;
-        bool exists = g != null && pw != null;
-        guestInfo.Text = exists
-            ? $"{Machine}\\{g!.Name}   ·   password  {pw}"
-            : $"A shared login, {Sharing.GuestUserName}, is created with a password to pass on.";
-        guestInfo.ForeColor = exists ? Theme.Foreground : Theme.MutedForeground;
-        guestInfo.Font = exists ? Theme.Mono : Theme.Body;
-        guestCopy.Visible = guestReset.Visible = exists;
-    }
-
-    ShareMode Mode => mode.SelectedIndex switch
-    {
-        0 => ShareMode.ExistingUser,
-        1 => ShareMode.NewUser,
-        _ => anonymous.Checked ? ShareMode.Anonymous : ShareMode.Guest,
-    };
-
-    string? Problem()
-    {
-        var f = folder.Text.Trim();
-        if (f.Length == 0) return "Choose a folder to share.";
-        if (!Directory.Exists(f)) return "That folder doesn't exist.";
-        if (Naming.ShareNameError(shareName.Text) is { } e) return e;
-        if (Mode == ShareMode.ExistingUser && existingUser.Text.Trim().Length == 0) return "Choose a user.";
-        if (Mode == ShareMode.NewUser)
+        catch (Exception e)
         {
-            if (Naming.UserNameError(newUser.Text.Trim()) is { } u) return u;
-            if (newPassword.Text.Length == 0) return "Enter or generate a password.";
+            SetConnected(false, e.Message);
         }
-        return null;
+        finally
+        {
+            starting = false;
+        }
     }
 
-    async void Share()
+    void SetConnected(bool on, string message)
     {
-        if (busy) return;
-        if (Problem() is { } problem)
+        newCard.Enabled = on;
+        if (!on)
         {
-            hint.Text = problem;
-            return;
+            pill.Set(starting ? "Starting…" : "Needs admin rights", starting ? Tone.Neutral : Tone.Warning);
+            action.Text = "Allow…";
+            action.Visible = !starting;
+            undoLink.Visible = cleanLink.Visible = false;
+            list.SetEmptyText(message);
+            list.SetItems([]);
         }
-        if (Mode == ShareMode.Anonymous)
+        else
         {
-            var (ok, _) = Dialog.Ask(this, "Share anonymously?", anonWarning.Text, "Share anonymously", danger: true);
-            if (!ok) return;
+            action.Text = "Fix…";
+            action.Visible = false;
+            list.SetEmptyText("No shares yet.\nPick a folder above, or drop one onto the window.");
         }
-        var request = new ShareRequest(folder.Text.Trim(), shareName.Text.Trim(), Mode, access.SelectedIndex == 0 ? Access.Read : Access.ReadWrite,
-            Mode == ShareMode.NewUser ? newUser.Text.Trim() : existingUser.Text.Trim(), newPassword.Text);
-        var result = await Work("Sharing…", () => Sharing.Create(request));
-        if (result == null) return;
-        RefreshList();
-        CheckHealth();
-        ShowResult(result);
-        programmatic = true;
-        folder.Text = shareName.Text = "";
-        programmatic = false;
-        nameEdited = userEdited = false;
-        if (Mode == ShareMode.NewUser)
-        {
-            newUser.Text = "";
-            newPassword.Text = Passwords.Generate();
-        }
-        if (mode.SelectedIndex == 2) RefreshGuest();
-        existingUser.Items.Clear();
-        existingUser.Items.AddRange([.. Accounts.Selectable()]);
     }
 
-    void ShowResult(ShareResult r)
+    /// <summary>Fetches the shares, users and guest login; then checks the network side, which can take a moment.</summary>
+    async Task Reload()
     {
-        var path = $@"\\{Machine}\{r.Record.Name}";
-        var sb = new StringBuilder();
-        sb.AppendLine($"Folder     {path}");
-        string message;
-        switch (r.Record.Mode)
-        {
-            case ShareMode.Anonymous:
-                sb.AppendLine("Sign-in    none");
-                message = "Anyone on the network can open it without a password, if their PC allows guest access.";
-                break;
-            case ShareMode.ExistingUser:
-                sb.AppendLine($"User       {(r.Record.Account.Contains('\\') ? r.Record.Account : $@"{Machine}\{r.Record.Account}")}");
-                sb.AppendLine("Password   that user's own password");
-                message = "Other PCs can open it with this account. Enter the user name with the PC's name in front, as shown.";
-                break;
-            default:
-                sb.AppendLine($@"User       {Machine}\{r.User}");
-                sb.AppendLine($"Password   {r.Password}");
-                message = r.Record.Mode == ShareMode.Guest
-                    ? "Everyone you give this login to can open it. The same login works for every \"Everyone\" share."
-                    : "Pass this login on to whoever should open the folder. The app shows the password only now.";
-                break;
-        }
-        sb.Append($"Access     {r.Record.AccessText}");
-        var text = sb.ToString();
-        Dialog.Info(this, "Folder shared", message, copy: text, mono: text);
-    }
-
-    void ResetGuest()
-    {
-        var (ok, _) = Dialog.Ask(this, "New guest password?",
-            "PCs that saved the current password will have to enter the new one.", "New password");
-        if (!ok) return;
+        if (backend == null) return;
         try
         {
-            Sharing.ResetGuestPassword();
-            RefreshGuest();
+            var b = backend;
+            data = await Task.Run(b.Snapshot);
+            editor.SetData(data);
+            list.SetItems(data.Shares.Select(r => new ShareList.Item(r, data.Missing.Contains(r.Name))).ToList());
+            cleanLink.Visible = data.Shares.Count > 0 || data.Users.Count > 0 || data.HasFixes;
+            health = await Task.Run(b.Health);
         }
         catch (Exception e)
         {
             Dialog.Error(this, e.Message);
-        }
-    }
-
-    // ── Shares ──────────────────────────────────────────────────────────────────────────────────
-
-    void RefreshList()
-    {
-        try
-        {
-            var items = Store.Shares().Select(r => new ShareList.Item(r, SmbShares.PathOf(r.Name) is not { } p || !r.SamePath(p))).ToList();
-            list.SetItems(items);
-            cleanLink.Visible = items.Count > 0 || Store.Users().Count > 0 || Store.HasFixes();
-        }
-        catch (Exception e)
-        {
-            Dialog.Error(this, e.Message);
-        }
-    }
-
-    async void Remove(ShareRecord r)
-    {
-        if (busy) return;
-        var user = Sharing.DeletableUser(r);
-        var options = user == null ? [] : new[] { (user.Guest
-            ? $"Also delete the guest login \"{user.Name}\" (no other share uses it)"
-            : $"Also delete the user \"{user.Name}\" that was created for this share", true) };
-        var (ok, checks) = Dialog.Ask(this, $"Remove \"{r.Name}\"?",
-            $"Stops sharing {r.Path} and removes the permissions this app gave it. The folder and its files stay as they are.",
-            "Remove", danger: true, options: options);
-        if (!ok) return;
-        bool deleteUser = checks.Length > 0 && checks[0];
-        var warnings = await Work("Removing…", () => Sharing.Remove(r, deleteUser));
-        RefreshList();
-        if (mode.SelectedIndex == 2) RefreshGuest();
-        if (warnings is { Count: > 0 }) Dialog.Info(this, "Removed, with problems", string.Join("\n\n", warnings));
-    }
-
-    // ── Fixes and clean-up ──────────────────────────────────────────────────────────────────────
-
-    async void CheckHealth()
-    {
-        try
-        {
-            health = await Task.Run(Fixes.Check);
-        }
-        catch
-        {
             return;
         }
         if (IsDisposed) return;
         pill.Set(health.Ok ? "Ready to share" : "Sharing blocked", health.Ok ? Tone.Good : Tone.Warning);
-        fix.Visible = !health.Ok;
+        action.Visible = !health.Ok;
         undoLink.Visible = health.HasFixes;
-        cleanLink.Visible = Store.Shares().Count > 0 || Store.Users().Count > 0 || health.HasFixes;
+        cleanLink.Visible = data.Shares.Count > 0 || data.Users.Count > 0 || health.HasFixes;
     }
+
+    // ── Shares ──────────────────────────────────────────────────────────────────────────────────
+
+    async void Share()
+    {
+        if (busy || backend == null) return;
+        var (problem, grants) = editor.Collect();
+        if (problem != null)
+        {
+            editor.ShowProblem(problem);
+            return;
+        }
+        if (editor.IsAnonymous(grants) && !Dialog.Ask(this, "Share anonymously?", ShareEditor.AnonymousWarning, "Share anonymously", danger: true).Ok)
+            return;
+        var spec = new ShareSpec(editor.Folder, editor.ShareName, grants);
+        var b = backend;
+        var result = await Work("Sharing…", () => b.Create(spec));
+        if (result == null) return;
+        editor.Reset();
+        await Reload();
+        Results.Show(this, "Folder shared", result);
+    }
+
+    async void Edit(ShareRecord r)
+    {
+        if (busy || backend == null || data == null) return;
+        using var f = new EditForm(backend, data, r);
+        if (f.ShowDialog(this) == DialogResult.OK) await Reload();
+    }
+
+    async void Remove(ShareRecord r)
+    {
+        if (busy || backend == null || data == null) return;
+        var orphans = Planning.OrphanedUsers(data.Shares, data.Users, r.Name, r.AllSids);
+        var (ok, checks) = Dialog.Ask(this, $"Remove \"{r.Name}\"?",
+            $"Stops sharing {r.Path} and removes the permissions this app gave it. The folder and its files stay as they are.",
+            "Remove", danger: true, options: [.. orphans.Select(u => (u.Guest
+                ? $"Also delete the guest login \"{u.Name}\" (no other share uses it)"
+                : $"Also delete the user \"{u.Name}\" (created by this app, no other share uses it)", true))]);
+        if (!ok) return;
+        var spec = new RemoveSpec(r.Name, orphans.Where((_, i) => checks[i]).Select(u => u.Name).ToList());
+        var b = backend;
+        var warnings = await Work("Removing…", () => b.Remove(spec));
+        await Reload();
+        if (warnings is { Count: > 0 }) Dialog.Info(this, "Removed, with problems", string.Join("\n\n", warnings));
+    }
+
+    async void ResetGuest()
+    {
+        if (busy || backend == null) return;
+        if (!Dialog.Ask(this, "New guest password?", "PCs that saved the current password will have to enter the new one.", "New password").Ok)
+            return;
+        var b = backend;
+        await Work("Working…", b.ResetGuest);
+        await Reload();
+    }
+
+    // ── Fixes and clean-up ──────────────────────────────────────────────────────────────────────
 
     async void Fix()
     {
-        if (busy || health == null) return;
+        if (busy || backend == null || health == null) return;
         var changes = new List<string>();
         if (!health.ServerOk) changes.Add("• Start the Server service (file sharing) and set it to start automatically.");
         if (!health.FirewallOk) changes.Add("• Turn on Windows Firewall's built-in \"File and Printer Sharing (SMB-In)\" rule for the current network.");
@@ -423,28 +242,29 @@ sealed class MainForm : Form
             string.Join("\n\n", health.Problems()) + "\n\nThis will:\n" + string.Join("\n", changes)
             + "\n\nNothing else is changed, and \"Undo fixes\" puts it back the way it was.", "Fix");
         if (!ok) return;
-        var h = health;
-        await Work("Fixing…", () => { Fixes.Apply(h); return h; });
-        CheckHealth();
+        var b = backend;
+        await Work("Fixing…", () => { b.Fix(); return b; });
+        await Reload();
     }
 
     async void UndoFixes()
     {
-        if (busy) return;
+        if (busy || backend == null) return;
         var (ok, _) = Dialog.Ask(this, "Undo fixes?",
             "Puts the firewall rule and the Server service back to how they were before this app changed them. "
             + "Other PCs may no longer reach your shares afterwards.", "Undo fixes");
         if (!ok) return;
-        var errors = await Work("Undoing…", Fixes.Undo);
-        CheckHealth();
+        var b = backend;
+        var errors = await Work("Undoing…", b.UndoFixes);
+        await Reload();
         if (errors is { Count: > 0 }) Dialog.Info(this, "Undone, with problems", string.Join("\n\n", errors));
     }
 
     async void CleanUp()
     {
-        if (busy) return;
-        int shares = Store.Shares().Count, users = Store.Users().Count;
-        bool fixes = Store.HasFixes();
+        if (busy || backend == null || data == null) return;
+        int shares = data.Shares.Count, users = data.Users.Count;
+        bool fixes = health?.HasFixes ?? data.HasFixes;
         var parts = new List<string>();
         if (shares > 0) parts.Add($"• Remove {shares} share{(shares == 1 ? "" : "s")} and the folder permissions the app added");
         if (fixes) parts.Add("• Undo the sharing fixes (firewall rule, Server service)");
@@ -453,18 +273,18 @@ sealed class MainForm : Form
             Dialog.Info(this, "Nothing to clean up", "This app hasn't changed anything on this PC.");
             return;
         }
-        var options = users > 0 ? new[] { ($"Also delete the {users} user{(users == 1 ? "" : "s")} this app created", true) } : [];
         var (ok, checks) = Dialog.Ask(this, "Clean up everything?",
             "Puts this PC back the way it was before this app was used:\n" + string.Join("\n", parts)
-            + "\n\nUse this before you take the app off a PC. Folders and files are never touched.", "Clean up", danger: true, options: options);
+            + "\n\nUse this before you take the app off a PC. Folders and files are never touched.", "Clean up", danger: true,
+            options: users > 0 ? [($"Also delete the {users} user{(users == 1 ? "" : "s")} this app created", true)] : []);
         if (!ok) return;
         bool deleteUsers = checks.Length > 0 && checks[0];
-        var warnings = await Work("Cleaning up…", () => Sharing.CleanUp(deleteUsers));
-        RefreshList();
-        CheckHealth();
-        if (mode.SelectedIndex == 2) RefreshGuest();
-        Dialog.Info(this, warnings is { Count: > 0 } ? "Cleaned up, with problems" : "All cleaned up",
-            warnings is { Count: > 0 } ? string.Join("\n\n", warnings) : "Everything this app changed has been removed.");
+        var b = backend;
+        var warnings = await Work("Cleaning up…", () => b.CleanUp(deleteUsers));
+        await Reload();
+        if (warnings == null) return;
+        Dialog.Info(this, warnings.Count > 0 ? "Cleaned up, with problems" : "All cleaned up",
+            warnings.Count > 0 ? string.Join("\n\n", warnings) : "Everything this app changed has been removed.");
     }
 
     // ── Busy state ──────────────────────────────────────────────────────────────────────────────
@@ -492,8 +312,33 @@ sealed class MainForm : Form
     {
         busy = on;
         UseWaitCursor = on;
-        share.Text = on ? label : "Share folder";
-        foreach (Control c in new Control[] { grid, share, list, fix, undoLink, cleanLink }) c.Enabled = !on;
+        editor.SetBusy(on, label);
+        foreach (Control c in new Control[] { list, action, undoLink, cleanLink }) c.Enabled = !on;
+    }
+
+    // ── Footer ──────────────────────────────────────────────────────────────────────────────────
+
+    string FooterText()
+    {
+        var ips = Addresses();
+        return $@"Other PCs connect to   \\{Machine}" + (ips.Count > 0 ? "   ·   " + string.Join("   ·   ", ips.Select(ip => @"\\" + ip)) : "");
+    }
+
+    static List<string> Addresses()
+    {
+        try
+        {
+            return NetworkInterface.GetAllNetworkInterfaces()
+                .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType is not (NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel))
+                .OrderByDescending(n => n.GetIPProperties().GatewayAddresses.Count > 0)
+                .SelectMany(n => n.GetIPProperties().UnicastAddresses)
+                .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork && !a.Address.ToString().StartsWith("169.254."))
+                .Select(a => a.Address.ToString()).Distinct().Take(2).ToList();
+        }
+        catch
+        {
+            return [];
+        }
     }
 
     async void Flash(string text)
@@ -503,21 +348,51 @@ sealed class MainForm : Form
         if (!IsDisposed) footer.Text = FooterText();
     }
 
+    // ── Drag and drop ───────────────────────────────────────────────────────────────────────────
+
+    /// <summary>Accepts a folder (or a file: its folder) dropped anywhere on the window. Every control registers, so the
+    /// drop works wherever the mouse is.</summary>
+    void EnableDrop(Control c)
+    {
+        c.AllowDrop = true;
+        c.DragEnter += OnDragEnter;
+        c.DragOver += OnDragEnter;
+        c.DragDrop += OnDragDrop;
+        foreach (Control child in c.Controls) EnableDrop(child);
+        c.ControlAdded += (_, e) => { if (e.Control != null) EnableDrop(e.Control); };
+    }
+
+    static string? DroppedFolder(IDataObject? data)
+    {
+        if (data?.GetData(DataFormats.FileDrop) is not string[] { Length: > 0 } paths) return null;
+        var path = paths[0];
+        if (File.Exists(path)) path = Path.GetDirectoryName(path) ?? path;
+        return Directory.Exists(path) ? path : null;
+    }
+
+    void OnDragEnter(object? sender, DragEventArgs e) =>
+        e.Effect = !busy && newCard.Enabled && DroppedFolder(e.Data) != null ? DragDropEffects.Copy : DragDropEffects.None;
+
+    void OnDragDrop(object? sender, DragEventArgs e)
+    {
+        if (!busy && newCard.Enabled && DroppedFolder(e.Data) is { } path) editor.SetFolder(path);
+    }
+
     // ── Window ──────────────────────────────────────────────────────────────────────────────────
 
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
-        FitCard();
-        CheckHealth();
+        newCard.Height = newCard.Padding.Vertical + editor.Height;
+        Connect();
     }
 
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
         Theme.DarkTitleBar(Handle);
-        // The app runs elevated, and Windows doesn't let a normal Explorer window drop onto an elevated one unless the
-        // window opts in to these messages. (OLE drag and drop can't cross that line at all, hence WM_DROPFILES.)
+        // When started as administrator anyway, Explorer can't drop through OLE into this window; these messages let the
+        // older WM_DROPFILES route through where Windows allows it.
         foreach (int msg in new[] { Native.WM_DROPFILES, Native.WM_COPYDATA, Native.WM_COPYGLOBALDATA })
             Native.ChangeWindowMessageFilterEx(Handle, msg, 1 /* MSGFLT_ALLOW */, 0);
         Native.DragAcceptFiles(Handle, true);
@@ -532,11 +407,17 @@ sealed class MainForm : Form
             {
                 var path = sb.ToString();
                 if (File.Exists(path)) path = Path.GetDirectoryName(path) ?? path;
-                if (Directory.Exists(path) && !busy) SetFolder(path);
+                if (Directory.Exists(path) && !busy && newCard.Enabled) editor.SetFolder(path);
             }
             Native.DragFinish(m.WParam);
             return;
         }
         base.WndProc(ref m);
+    }
+
+    protected override void OnFormClosed(FormClosedEventArgs e)
+    {
+        backend?.Dispose();
+        base.OnFormClosed(e);
     }
 }

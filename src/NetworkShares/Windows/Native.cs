@@ -37,6 +37,13 @@ static class Native
         public string? passwd;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct SHARE_INFO_1501
+    {
+        public uint reserved;
+        public nint security_descriptor;
+    }
+
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     public struct USER_INFO_1
     {
@@ -76,6 +83,9 @@ static class Native
 
     [DllImport("netapi32.dll", CharSet = CharSet.Unicode)]
     public static extern int NetShareDel(string? server, string netname, int reserved);
+
+    [DllImport("netapi32.dll", CharSet = CharSet.Unicode)]
+    public static extern int NetShareSetInfo(string? server, string netname, int level, ref SHARE_INFO_1501 buf, out int parmErr);
 
     [DllImport("netapi32.dll", CharSet = CharSet.Unicode)]
     public static extern int NetShareGetInfo(string? server, string netname, int level, out nint buf);
@@ -223,6 +233,14 @@ static class Native
 
     [DllImport("kernel32.dll")]
     public static extern nint LocalFree(nint mem);
+
+    // ── kernel32: who is on the other end of the helper's pipe ──────────────────────────────────
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool GetNamedPipeClientProcessId(Microsoft.Win32.SafeHandles.SafePipeHandle pipe, out uint processId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool GetNamedPipeServerProcessId(Microsoft.Win32.SafeHandles.SafePipeHandle pipe, out uint processId);
 
     // ── shell32 / user32: drag and drop into an elevated window ─────────────────────────────────
 
