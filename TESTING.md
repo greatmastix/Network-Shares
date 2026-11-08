@@ -9,6 +9,7 @@ Things that can only be checked on real Windows PCs. Tick them off as they're co
 ## Confirmed (v0.2)
 
 - [x] Drag a folder from Explorer onto the window: the folder field fills in
+- [x] On a PC where the firewall blocks file sharing: pill says "Sharing blocked", **Fix…** fixes it
 
 ## Still to test
 
@@ -30,7 +31,6 @@ Things that can only be checked on real Windows PCs. Tick them off as they're co
 - [ ] Shares made with v0.1 still show up and can be edited and removed
 
 ### Fix… / Undo fixes
-- [ ] On a PC where the firewall blocks file sharing: pill says "Sharing blocked", **Fix…** fixes it, another PC can connect
 - [ ] **Undo fixes** puts the firewall rule back off
 - [ ] Server service stopped or disabled: **Fix…** starts it; **Undo fixes** returns it to how it was
 
