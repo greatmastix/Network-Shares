@@ -6,10 +6,13 @@ Things that can only be checked on real Windows PCs. Tick them off as they're co
 
 - [x] Layout looks good
 
+## Confirmed (v0.2)
+
+- [x] Drag a folder from Explorer onto the window: the folder field fills in
+
 ## Still to test
 
-### Drag and drop (reworked in v0.2)
-- [ ] Drag a folder from Explorer onto the window: the folder field fills in
+### Drag and drop (details)
 - [ ] Drop onto a text box, the share list and the empty space: all work
 - [ ] Drop a file: its folder is used
 
