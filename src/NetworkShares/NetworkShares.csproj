@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <!-- Lets the project build (not run) on Linux/macOS, e.g. in CI. -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <!-- Creating shares and users needs administrator rights: Windows asks once (UAC) when the app starts. -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AssemblyName>NetworkShares</AssemblyName>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <Product>Network Shares</Product>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+</Project>
